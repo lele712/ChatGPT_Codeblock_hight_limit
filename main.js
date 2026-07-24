@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         ChatGPT 代码块最大高度限制
 // @namespace    https://chatgpt.com/
-// @version      1.1.3
-// @description  限制 ChatGPT 代码内容区域的最大高度，超出后显示滚动条
+// @version      1.2.0
+// @description  限制 ChatGPT 对话代码块的最大高度，并为右侧文本预览栏添加复制按钮
 // @author       lele712
 // @license      MIT
 // @match        https://chatgpt.com/*
@@ -14,10 +14,29 @@
 (function () {
     'use strict';
 
-    const MAX_HEIGHT = '500px';
+    const MAX_HEIGHT = '300px';
 
     const STYLE_ID = 'chatgpt-code-max-height-style';
     const TARGET_CLASS = 'chatgpt-code-scroll-target';
+    const PREVIEW_SELECTOR = '[id^="artifact-text-preview-"]';
+    const COPY_BUTTON_CLASS = 'chatgpt-preview-copy-button';
+    const COPY_ICON = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"
+            viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true">
+            <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+            <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+        </svg>
+    `;
+    const SUCCESS_ICON = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"
+            viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+            aria-hidden="true">
+            <path d="M20 6 9 17l-5-5"></path>
+        </svg>
+    `;
 
     function injectStyle() {
         if (document.getElementById(STYLE_ID)) {
@@ -111,6 +130,110 @@
         );
     }
 
+    function isInPreviewPane(element) {
+        return element.closest(PREVIEW_SELECTOR) !== null;
+    }
+
+    function clearTargetClass(root) {
+        root.classList.remove(TARGET_CLASS);
+        root.querySelectorAll(`.${TARGET_CLASS}`).forEach((element) => {
+            element.classList.remove(TARGET_CLASS);
+        });
+    }
+
+    function findPreviewHeader(editor) {
+        let container = editor.parentElement;
+
+        while (container && container !== document.body) {
+            const header = Array.from(container.children).find((child) => {
+                return child.tagName === 'HEADER';
+            });
+
+            if (header instanceof HTMLElement) {
+                return header;
+            }
+
+            container = container.parentElement;
+        }
+
+        return null;
+    }
+
+    async function copyPreviewText(editor, button) {
+        const content = editor.querySelector('.cm-content');
+
+        if (!(content instanceof HTMLElement)) {
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(content.textContent || '');
+            button.innerHTML = SUCCESS_ICON;
+            button.setAttribute('aria-label', '已复制');
+            button.title = '已复制';
+
+            window.setTimeout(() => {
+                if (button.isConnected) {
+                    button.innerHTML = COPY_ICON;
+                    button.setAttribute('aria-label', '复制文本');
+                    button.title = '复制文本';
+                }
+            }, 1500);
+        } catch (error) {
+            console.error('复制右侧预览栏文本失败：', error);
+            button.setAttribute('aria-label', '复制失败');
+            button.title = '复制失败';
+        }
+    }
+
+    function addPreviewCopyButton(editor) {
+        if (!(editor instanceof HTMLElement)) {
+            return;
+        }
+
+        const header = findPreviewHeader(editor);
+
+        if (!(header instanceof HTMLElement)) {
+            return;
+        }
+
+        const actions = header.lastElementChild;
+
+        if (!(actions instanceof HTMLElement)) {
+            return;
+        }
+
+        let button = actions.querySelector(`.${COPY_BUTTON_CLASS}`);
+
+        if (!(button instanceof HTMLButtonElement)) {
+            button = document.createElement('button');
+            button.type = 'button';
+            button.className = `${COPY_BUTTON_CLASS} interactive-button flex h-9 w-9 ` +
+                'shrink-0 items-center justify-center rounded-lg border-0 ' +
+                'bg-transparent p-0 hover:bg-token-surface-hover ' +
+                'keyboard-focused:bg-token-surface-hover ' +
+                'dark:hover:bg-token-main-surface-tertiary';
+            button.setAttribute('aria-label', '复制文本');
+            button.title = '复制文本';
+            button.innerHTML = COPY_ICON;
+            actions.prepend(button);
+        }
+
+        button.onclick = () => {
+            copyPreviewText(editor, button);
+        };
+    }
+
+    function processPreviewPanes(root = document) {
+        if (root instanceof Element && root.matches(PREVIEW_SELECTOR)) {
+            addPreviewCopyButton(root);
+        }
+
+        root.querySelectorAll(PREVIEW_SELECTOR).forEach((editor) => {
+            addPreviewCopyButton(editor);
+        });
+    }
+
     function processCodeBlock(pre) {
         if (!(pre instanceof HTMLElement)) {
             return;
@@ -119,6 +242,12 @@
         const rootPre = findRootPre(pre);
 
         if (!(rootPre instanceof HTMLElement)) {
+            return;
+        }
+
+        // 右侧文本预览使用独立编辑器，不限制其中代码内容的高度。
+        if (isInPreviewPane(rootPre)) {
+            clearTargetClass(rootPre);
             return;
         }
 
@@ -165,6 +294,7 @@
     }
 
     injectStyle();
+    processPreviewPanes();
 
     const processed = new Set();
 
@@ -181,6 +311,10 @@
         for (const mutation of mutations) {
             for (const node of mutation.addedNodes) {
                 processNode(node);
+
+                if (node instanceof Element) {
+                    processPreviewPanes(node);
+                }
             }
         }
     });
